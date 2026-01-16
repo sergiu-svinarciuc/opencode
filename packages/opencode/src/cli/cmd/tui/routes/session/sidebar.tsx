@@ -40,15 +40,80 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
       ).length,
   )
 
+  // Get child sessions (subagents/tasks) to include their costs
+  const childSessions = createMemo(() => {
+    const current = session()
+    if (!current) return []
+    // If we're in a child session, don't double-count
+    if (current.parentID) return []
+    // Get all sessions that have this session as parent
+    return sync.data.session.filter((s) => s.parentID === current.id)
+  })
+
   const cost = createMemo(() => {
-    const total = messages().reduce((sum, x) => sum + (x.role === "assistant" ? x.cost : 0), 0)
+    // Sum current session's costs
+    let total = messages().reduce((sum, x) => sum + (x.role === "assistant" ? x.cost : 0), 0)
+    // Add child sessions' costs
+    const children = childSessions() ?? []
+    for (const child of children) {
+      if (!child?.id) continue
+      const childMessages = sync.data.message[child.id] ?? []
+      total += childMessages.reduce((sum, x) => sum + (x.role === "assistant" ? x.cost : 0), 0)
+    }
     return new Intl.NumberFormat("en-US", {
       style: "currency",
       currency: "USD",
     }).format(total)
   })
 
+  // Total tokens across session + all child sessions (for Session section)
+  const sessionStats = createMemo(() => {
+    const sumTokens = (msgs: typeof messages extends () => infer R ? R : never) =>
+      msgs.reduce(
+        (acc, x) => {
+          if (x.role !== "assistant") return acc
+          const t = x.tokens
+          // Input includes: input + cache read + cache write
+          acc.input += t.input + t.cache.read + t.cache.write
+          // Output includes: output + reasoning
+          acc.output += t.output + t.reasoning
+          acc.inputCost += x.cost * (t.input + t.cache.read + t.cache.write) /
+            (t.input + t.output + t.reasoning + t.cache.read + t.cache.write || 1)
+          acc.outputCost += x.cost * (t.output + t.reasoning) /
+            (t.input + t.output + t.reasoning + t.cache.read + t.cache.write || 1)
+          return acc
+        },
+        { input: 0, output: 0, inputCost: 0, outputCost: 0 },
+      )
+
+    const stats = sumTokens(messages())
+    const children = childSessions() ?? []
+    for (const child of children) {
+      if (!child?.id) continue
+      const childMessages = sync.data.message[child.id] ?? []
+      const childStats = sumTokens(childMessages)
+      stats.input += childStats.input
+      stats.output += childStats.output
+      stats.inputCost += childStats.inputCost
+      stats.outputCost += childStats.outputCost
+    }
+
+    const formatCost = (val: number) =>
+      new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(val)
+
+    return {
+      total: (stats.input + stats.output).toLocaleString(),
+      input: stats.input.toLocaleString(),
+      output: stats.output.toLocaleString(),
+      inputCost: formatCost(stats.inputCost),
+      outputCost: formatCost(stats.outputCost),
+      totalCost: formatCost(stats.inputCost + stats.outputCost),
+    }
+  })
+
   const context = createMemo(() => {
+    // Context % shows current context window usage (last message only)
+    // Child sessions have their own separate context windows
     const last = messages().findLast((x) => x.role === "assistant" && x.tokens.output > 0) as AssistantMessage
     if (!last) return
     const total =
@@ -91,11 +156,18 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
             </box>
             <box>
               <text fg={theme.text}>
+                <b>Session</b>
+              </text>
+              <text fg={theme.textMuted}>{sessionStats().total} tokens ({sessionStats().totalCost})</text>
+              <text fg={theme.textMuted}>  ↓ {sessionStats().input} in ({sessionStats().inputCost})</text>
+              <text fg={theme.textMuted}>  ↑ {sessionStats().output} out ({sessionStats().outputCost})</text>
+            </box>
+            <box>
+              <text fg={theme.text}>
                 <b>Context</b>
               </text>
               <text fg={theme.textMuted}>{context()?.tokens ?? 0} tokens</text>
               <text fg={theme.textMuted}>{context()?.percentage ?? 0}% used</text>
-              <text fg={theme.textMuted}>{cost()} spent</text>
             </box>
             <Show when={mcpEntries().length > 0}>
               <box>

@@ -15,11 +15,85 @@ import { Config } from "@/config/config"
 import { SessionCompaction } from "./compaction"
 import { PermissionNext } from "@/permission/next"
 import { Question } from "@/question"
+import z from "zod"
+
+// Parse Kimi K2 style tool calls from reasoning text
+// Formats supported:
+// 1. <|tool_call_begin|> functions.read:3 <|tool_call_argument_begin|> {"filePath": "..."} <|tool_call_end|>
+// 2. <|tool_call_begin|> task:2 <|tool_call_argument_begin|> {...} <|tool_call_end|>
+// 3. <|tool_call_begin|> 01KEXZ9VD6M5Y2M7PCKXHABZ1K <|tool_call_argument_begin|> {"command": "..."} <|tool_call_end|> (ULID only, infer tool from args)
+function parseReasoningToolCalls(text: string): Array<{ tool: string; args: Record<string, unknown> }> | null {
+  if (!text.includes("<|tool_calls_section_begin|>")) return null
+  const toolCalls: Array<{ tool: string; args: Record<string, unknown> }> = []
+  // Match tool call blocks - capture the identifier and JSON args
+  const toolCallRegex = /<\|tool_call_begin\|>\s*([^\s<]+)\s*<\|tool_call_argument_begin\|>\s*(\{[\s\S]*?\})\s*<\|tool_call_end\|>/g
+  let match
+  while ((match = toolCallRegex.exec(text)) !== null) {
+    const identifier = match[1]
+    try {
+      const args = JSON.parse(match[2])
+      // Determine tool name from identifier or infer from args
+      let toolName: string
+      if (identifier.includes(".")) {
+        // Format: functions.bash:0 or functions.read:3
+        toolName = identifier.split(".")[1]?.split(":")[0] ?? identifier
+      } else if (identifier.includes(":")) {
+        // Format: task:2 or bash:0
+        toolName = identifier.split(":")[0]
+      } else {
+        // Format: ULID only - infer tool from args
+        if ("command" in args) {
+          toolName = "bash"
+        } else if ("filePath" in args || "file_path" in args) {
+          toolName = "read"
+        } else if ("pattern" in args && "path" in args) {
+          toolName = "glob"
+        } else if ("pattern" in args) {
+          toolName = "grep"
+        } else if ("prompt" in args && "subagent_type" in args) {
+          toolName = "task"
+        } else if ("content" in args && "file_path" in args) {
+          toolName = "write"
+        } else if ("old_string" in args && "new_string" in args) {
+          toolName = "edit"
+        } else {
+          console.error("Could not infer tool from args:", args)
+          continue
+        }
+      }
+      toolCalls.push({ tool: toolName, args })
+    } catch (e) {
+      // Skip malformed args but log for debugging
+      console.error("Failed to parse tool args:", match[2], e)
+    }
+  }
+  return toolCalls.length > 0 ? toolCalls : null
+}
+
+// Parse tool input - GLM 4.7 sometimes passes stringified JSON instead of object
+function parseToolInput(input: unknown): Record<string, unknown> {
+  if (typeof input === "string") {
+    try {
+      const parsed = JSON.parse(input)
+      if (typeof parsed === "object" && parsed !== null) {
+        return parsed as Record<string, unknown>
+      }
+    } catch {
+      // Return as command if it looks like a shell command
+      return { command: input }
+    }
+  }
+  if (typeof input === "object" && input !== null) {
+    return input as Record<string, unknown>
+  }
+  return {}
+}
 
 export namespace SessionProcessor {
   const DOOM_LOOP_THRESHOLD = 3
   const log = Log.create({ service: "session.processor" })
-
+  
+  export type ParsedToolCall = { tool: string; args: Record<string, unknown> }
   export type Info = Awaited<ReturnType<typeof create>>
   export type Result = Awaited<ReturnType<Info["process"]>>
 
@@ -34,10 +108,14 @@ export namespace SessionProcessor {
     let blocked = false
     let attempt = 0
     let needsCompaction = false
+    let reasoningToolCalls: ParsedToolCall[] | null = null
 
     const result = {
       get message() {
         return input.assistantMessage
+      },
+      get parsedReasoningToolCalls() {
+        return reasoningToolCalls
       },
       partFromToolCall(toolCallID: string) {
         return toolcalls[toolCallID]
@@ -90,6 +168,14 @@ export namespace SessionProcessor {
                     const part = reasoningMap[value.id]
                     part.text = part.text.trimEnd()
 
+                    // Parse Kimi K2 style tool calls from reasoning text
+                    const parsedCalls = parseReasoningToolCalls(part.text)
+                    if (parsedCalls) {
+                      log.info("parsed tool calls from reasoning", { count: parsedCalls.length, tools: parsedCalls.map(c => c.tool) })
+                      reasoningToolCalls = parsedCalls
+                    }
+                    log.info("reasoning-end", { hasToolCalls: !!parsedCalls, textLength: part.text.length, containsToolSection: part.text.includes("<|tool_calls_section_begin|>") })
+
                     part.time = {
                       ...part.time,
                       end: Date.now(),
@@ -126,12 +212,14 @@ export namespace SessionProcessor {
                 case "tool-call": {
                   const match = toolcalls[value.toolCallId]
                   if (match) {
+                    // Parse input in case GLM passes stringified JSON
+                    const parsedInput = parseToolInput(value.input)
                     const part = await Session.updatePart({
                       ...match,
                       tool: value.toolName,
                       state: {
                         status: "running",
-                        input: value.input,
+                        input: parsedInput,
                         time: {
                           start: Date.now(),
                         },
@@ -150,7 +238,7 @@ export namespace SessionProcessor {
                           p.type === "tool" &&
                           p.tool === value.toolName &&
                           p.state.status !== "pending" &&
-                          JSON.stringify(p.state.input) === JSON.stringify(value.input),
+                          JSON.stringify(p.state.input) === JSON.stringify(parsedInput),
                       )
                     ) {
                       const agent = await Agent.get(input.assistantMessage.agent)
@@ -160,7 +248,7 @@ export namespace SessionProcessor {
                         sessionID: input.assistantMessage.sessionID,
                         metadata: {
                           tool: value.toolName,
-                          input: value.input,
+                          input: parsedInput,
                         },
                         always: [value.toolName],
                         ruleset: agent.permission,
@@ -176,7 +264,7 @@ export namespace SessionProcessor {
                       ...match,
                       state: {
                         status: "completed",
-                        input: value.input,
+                        input: parseToolInput(value.input),
                         output: value.output.output,
                         metadata: value.output.metadata,
                         title: value.output.title,
@@ -200,7 +288,7 @@ export namespace SessionProcessor {
                       ...match,
                       state: {
                         status: "error",
-                        input: value.input,
+                        input: parseToolInput(value.input),
                         error: (value.error as any).toString(),
                         time: {
                           start: match.state.time.start,
@@ -239,12 +327,20 @@ export namespace SessionProcessor {
                     usage: value.usage,
                     metadata: value.providerMetadata,
                   })
-                  input.assistantMessage.finish = value.finishReason
+
+                  // Support `finishReason` in both new and old versions of ai-sdk
+                  // https://github.com/vercel/ai/pull/11338
+                  const finishReason = z.union([
+                    z.string(),
+                    z.object({ unified: z.string(), raw: z.string() }),
+                  ]).transform((value) => typeof value === "string" ? value : value.unified).parse(value.finishReason);
+
+                  input.assistantMessage.finish = finishReason
                   input.assistantMessage.cost += usage.cost
                   input.assistantMessage.tokens = usage.tokens
                   await Session.updatePart({
                     id: Identifier.ascending("part"),
-                    reason: value.finishReason,
+                    reason: finishReason,
                     snapshot: await Snapshot.track(),
                     messageID: input.assistantMessage.id,
                     sessionID: input.assistantMessage.sessionID,

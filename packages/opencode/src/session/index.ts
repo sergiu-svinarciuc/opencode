@@ -416,11 +416,34 @@ export namespace Session {
       metadata: z.custom<ProviderMetadata>().optional(),
     }),
     (input) => {
-      const cachedInputTokens = input.usage.cachedInputTokens ?? 0
+      // Handle both old format (number) and new ai-sdk v5 format (object with total)
+      const getTokenValue = (value: unknown): number => {
+        if (typeof value === "number") return value
+        if (typeof value === "object" && value !== null && "total" in value) {
+          return (value as { total: number }).total
+        }
+        return 0
+      }
+
+      const inputTokens = getTokenValue(input.usage.inputTokens)
+      const outputTokens = getTokenValue(input.usage.outputTokens)
+
+      // For cached tokens, check both old format and new nested format
+      const cachedInputTokens = input.usage.cachedInputTokens ??
+        (typeof input.usage.inputTokens === "object" && input.usage.inputTokens !== null
+          ? (input.usage.inputTokens as any).cacheRead ?? 0
+          : 0)
+
+      // For reasoning tokens, check both old format and new nested format
+      const reasoningTokens = input.usage?.reasoningTokens ??
+        (typeof input.usage.outputTokens === "object" && input.usage.outputTokens !== null
+          ? (input.usage.outputTokens as any).reasoning ?? 0
+          : 0)
+
       const excludesCachedTokens = !!(input.metadata?.["anthropic"] || input.metadata?.["bedrock"])
       const adjustedInputTokens = excludesCachedTokens
-        ? (input.usage.inputTokens ?? 0)
-        : (input.usage.inputTokens ?? 0) - cachedInputTokens
+        ? inputTokens
+        : inputTokens - cachedInputTokens
       const safe = (value: number) => {
         if (!Number.isFinite(value)) return 0
         return value
@@ -428,8 +451,8 @@ export namespace Session {
 
       const tokens = {
         input: safe(adjustedInputTokens),
-        output: safe(input.usage.outputTokens ?? 0),
-        reasoning: safe(input.usage?.reasoningTokens ?? 0),
+        output: safe(outputTokens),
+        reasoning: safe(reasoningTokens),
         cache: {
           write: safe(
             (input.metadata?.["anthropic"]?.["cacheCreationInputTokens"] ??
