@@ -613,6 +613,75 @@ export namespace SessionPrompt {
         tools,
         model,
       })
+
+      // Handle Kimi K2 style tool calls parsed from reasoning text
+      // Note: model naturally stops after outputting tool calls in reasoning, so we execute even when result is "stop"
+      const parsedToolCalls = processor.parsedReasoningToolCalls
+      log.info("check parsed reasoning tool calls", { hasParsedCalls: !!parsedToolCalls, count: parsedToolCalls?.length ?? 0, result })
+      if (parsedToolCalls && parsedToolCalls.length > 0) {
+        log.info("executing parsed reasoning tool calls", { count: parsedToolCalls.length })
+
+        for (const call of parsedToolCalls) {
+          const toolDef = tools[call.tool]
+          if (!toolDef || !toolDef.execute) {
+            log.warn("tool not found for parsed reasoning call", { tool: call.tool })
+            continue
+          }
+
+          const callID = ulid()
+          const toolPart = (await Session.updatePart({
+            id: Identifier.ascending("part"),
+            messageID: processor.message.id,
+            sessionID,
+            type: "tool",
+            tool: call.tool,
+            callID,
+            state: {
+              status: "running",
+              input: call.args,
+              time: { start: Date.now() },
+            },
+          })) as MessageV2.ToolPart
+
+          try {
+            const toolResult = await toolDef.execute(call.args, {
+              toolCallId: callID,
+              abortSignal: abort,
+              messages: [],
+            })
+
+            await Session.updatePart({
+              ...toolPart,
+              state: {
+                status: "completed",
+                input: call.args,
+                output: toolResult.output,
+                metadata: toolResult.metadata,
+                title: toolResult.title,
+                time: { start: toolPart.state.status === "running" ? toolPart.state.time.start : Date.now(), end: Date.now() },
+              },
+            })
+          } catch (error: any) {
+            log.error("parsed reasoning tool call failed", { tool: call.tool, error })
+            await Session.updatePart({
+              ...toolPart,
+              state: {
+                status: "error",
+                input: call.args,
+                error: error?.message ?? "Tool execution failed",
+                time: { start: toolPart.state.status === "running" ? toolPart.state.time.start : Date.now(), end: Date.now() },
+              },
+            })
+          }
+        }
+
+        // Mark assistant message as tool-calls to continue the loop
+        processor.message.finish = "tool-calls"
+        processor.message.time.completed = Date.now()
+        await Session.updateMessage(processor.message)
+        continue
+      }
+
       if (result === "stop") break
       if (result === "compact") {
         await SessionCompaction.create({

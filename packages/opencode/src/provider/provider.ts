@@ -965,7 +965,14 @@ export namespace Provider {
       const provider = s.providers[model.providerID]
       const options = { ...provider.options }
 
-      if (model.api.npm.includes("@ai-sdk/openai-compatible") && options["includeUsage"] !== false) {
+      // Enable includeUsage for openai-compatible providers to get token usage in streaming responses
+      // This includes direct @ai-sdk/openai-compatible usage and providers that wrap it (like vertex-partner-provider)
+      if (
+        (model.api.npm.includes("@ai-sdk/openai-compatible") ||
+          model.api.npm.includes("vertex-partner-provider") ||
+          model.api.npm.includes("openai-compatible")) &&
+        options["includeUsage"] !== false
+      ) {
         options["includeUsage"] = true
       }
 

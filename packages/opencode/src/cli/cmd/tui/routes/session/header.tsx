@@ -36,11 +36,32 @@ export function Header() {
   const session = createMemo(() => sync.session.get(route.sessionID)!)
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
 
+  // Get child sessions (subagents/tasks) to include their costs
+  const childSessions = createMemo(() => {
+    const current = session()
+    if (!current) return []
+    // If we're in a child session, don't double-count
+    if (current.parentID) return []
+    // Get all sessions that have this session as parent
+    return sync.data.session.filter((s) => s.parentID === current.id)
+  })
+
   const cost = createMemo(() => {
-    const total = pipe(
+    // Sum current session's costs
+    let total = pipe(
       messages(),
       sumBy((x) => (x.role === "assistant" ? x.cost : 0)),
     )
+    // Add child sessions' costs
+    const children = childSessions() ?? []
+    for (const child of children) {
+      if (!child?.id) continue
+      const childMessages = sync.data.message[child.id] ?? []
+      total += pipe(
+        childMessages,
+        sumBy((x) => (x.role === "assistant" ? x.cost : 0)),
+      )
+    }
     return new Intl.NumberFormat("en-US", {
       style: "currency",
       currency: "USD",
@@ -48,6 +69,8 @@ export function Header() {
   })
 
   const context = createMemo(() => {
+    // Context % shows current context window usage (last message only)
+    // Child sessions have their own separate context windows
     const last = messages().findLast((x) => x.role === "assistant" && x.tokens.output > 0) as AssistantMessage
     if (!last) return
     const total =
