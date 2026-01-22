@@ -15,7 +15,6 @@ import { Config } from "@/config/config"
 import { SessionCompaction } from "./compaction"
 import { PermissionNext } from "@/permission/next"
 import { Question } from "@/question"
-import z from "zod"
 
 // Parse Kimi K2 style tool calls from reasoning text
 // Formats supported:
@@ -330,10 +329,20 @@ export namespace SessionProcessor {
 
                   // Support `finishReason` in both new and old versions of ai-sdk
                   // https://github.com/vercel/ai/pull/11338
-                  const finishReason = z.union([
-                    z.string(),
-                    z.object({ unified: z.string(), raw: z.string() }),
-                  ]).transform((value) => typeof value === "string" ? value : value.unified).parse(value.finishReason);
+                  // Use defensive approach to handle any format without throwing
+                  let finishReason: string
+                  const rawFinish = value.finishReason
+                  if (typeof rawFinish === "string") {
+                    finishReason = rawFinish
+                  } else if (rawFinish && typeof rawFinish === "object") {
+                    // Handle any object format - prefer unified, then raw, then type
+                    finishReason = (rawFinish as any).unified
+                      ?? (rawFinish as any).raw
+                      ?? (rawFinish as any).type
+                      ?? JSON.stringify(rawFinish)
+                  } else {
+                    finishReason = "unknown"
+                  }
 
                   input.assistantMessage.finish = finishReason
                   input.assistantMessage.cost += usage.cost
