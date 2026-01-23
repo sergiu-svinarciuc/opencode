@@ -453,9 +453,9 @@ export namespace Session {
       const excludesCachedTokens = !!(input.metadata?.["anthropic"] || input.metadata?.["bedrock"])
       const adjustedInputTokens = excludesCachedTokens
         ? inputTokens
-        : inputTokens - cachedInputTokens
+        : Math.max(0, inputTokens - cachedInputTokens)
       const safe = (value: number) => {
-        if (!Number.isFinite(value)) return 0
+        if (!Number.isFinite(value) || value < 0) return 0
         return value
       }
 
