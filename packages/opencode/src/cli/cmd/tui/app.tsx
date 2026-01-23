@@ -175,8 +175,6 @@ export function tui(input: {
             })
           },
         },
-        // Disable mouse on Windows - mouse events corrupt terminal state
-        useMouse: process.platform !== "win32",
       },
     )
   })

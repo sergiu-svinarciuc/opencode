@@ -183,8 +183,6 @@ export function Prompt(props: PromptProps) {
         category: "Prompt",
         hidden: true,
         onSelect: async () => {
-          // Skip Clipboard.read() on Windows - PowerShell corrupts terminal
-          if (process.platform === "win32") return
           const content = await Clipboard.read()
           if (content?.mime.startsWith("image/")) {
             await pasteImage({
@@ -790,10 +788,11 @@ export function Prompt(props: PromptProps) {
                   e.preventDefault()
                   return
                 }
-                // Handle clipboard paste (Ctrl+V) for images
-                // On Windows, skip - Clipboard.read() uses PowerShell which corrupts terminal
-                // Text paste flows through onPaste handler on all platforms
-                if (keybind.match("input_paste", e) && process.platform !== "win32") {
+                // Handle clipboard paste (Ctrl+V) - check for images first on Windows
+                // This is needed because Windows terminal doesn't properly send image data
+                // through bracketed paste, so we need to intercept the keypress and
+                // directly read from clipboard before the terminal handles it
+                if (keybind.match("input_paste", e)) {
                   const content = await Clipboard.read()
                   if (content?.mime.startsWith("image/")) {
                     e.preventDefault()
@@ -804,6 +803,7 @@ export function Prompt(props: PromptProps) {
                     })
                     return
                   }
+                  // If no image, let the default paste behavior continue
                 }
                 if (keybind.match("input_clear", e) && store.prompt.input !== "") {
                   input.clear()
@@ -874,10 +874,7 @@ export function Prompt(props: PromptProps) {
                 const normalizedText = event.text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
                 const pastedContent = normalizedText.trim()
                 if (!pastedContent) {
-                  // On Windows, skip Clipboard.read() which uses PowerShell and corrupts terminal
-                  if (process.platform !== "win32") {
-                    command.trigger("prompt.paste")
-                  }
+                  command.trigger("prompt.paste")
                   return
                 }
 
