@@ -75,6 +75,8 @@ export namespace LLM {
         ...input.system,
         // any custom prompt from last user message
         ...(input.user.system ? [input.user.system] : []),
+        // vision analysis if available
+        ...((input.user as any).visionAnalysis ? [`[VISION ANALYSIS]\n${(input.user as any).visionAnalysis}`] : []),
       ]
         .filter((x) => x)
         .join("\n"),
@@ -192,9 +194,7 @@ export namespace LLM {
         let repairedArgs: unknown = failed.toolCall.input
         try {
           // Parse if string, otherwise use as-is
-          const parsed = typeof repairedArgs === "string"
-            ? JSON.parse(repairedArgs)
-            : repairedArgs
+          const parsed = typeof repairedArgs === "string" ? JSON.parse(repairedArgs) : repairedArgs
 
           if (parsed && typeof parsed === "object") {
             const cleaned: Record<string, unknown> = {}
@@ -228,8 +228,11 @@ export namespace LLM {
             }
 
             if (needsRepair) {
-              repairedArgs = cleaned  // Return object, not string
-              l.info("repaired tool args", { original: JSON.stringify(failed.toolCall.input), repaired: JSON.stringify(repairedArgs) })
+              repairedArgs = cleaned // Return object, not string
+              l.info("repaired tool args", {
+                original: JSON.stringify(failed.toolCall.input),
+                repaired: JSON.stringify(repairedArgs),
+              })
             }
           }
         } catch {

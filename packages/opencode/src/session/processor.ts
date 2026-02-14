@@ -15,6 +15,7 @@ import { Config } from "@/config/config"
 import { SessionCompaction } from "./compaction"
 import { PermissionNext } from "@/permission/next"
 import { Question } from "@/question"
+import { VisionPreprocessor } from "./vision-preprocessor"
 
 // Parse Kimi K2 style tool calls from reasoning text
 // Formats supported:
@@ -25,7 +26,8 @@ function parseReasoningToolCalls(text: string): Array<{ tool: string; args: Reco
   if (!text.includes("<|tool_calls_section_begin|>")) return null
   const toolCalls: Array<{ tool: string; args: Record<string, unknown> }> = []
   // Match tool call blocks - capture the identifier and JSON args
-  const toolCallRegex = /<\|tool_call_begin\|>\s*([^\s<]+)\s*<\|tool_call_argument_begin\|>\s*(\{[\s\S]*?\})\s*<\|tool_call_end\|>/g
+  const toolCallRegex =
+    /<\|tool_call_begin\|>\s*([^\s<]+)\s*<\|tool_call_argument_begin\|>\s*(\{[\s\S]*?\})\s*<\|tool_call_end\|>/g
   let match
   while ((match = toolCallRegex.exec(text)) !== null) {
     const identifier = match[1]
@@ -91,7 +93,7 @@ function parseToolInput(input: unknown): Record<string, unknown> {
 export namespace SessionProcessor {
   const DOOM_LOOP_THRESHOLD = 3
   const log = Log.create({ service: "session.processor" })
-  
+
   export type ParsedToolCall = { tool: string; args: Record<string, unknown> }
   export type Info = Awaited<ReturnType<typeof create>>
   export type Result = Awaited<ReturnType<Info["process"]>>
@@ -123,6 +125,26 @@ export namespace SessionProcessor {
         log.info("process")
         needsCompaction = false
         const shouldBreak = (await Config.get()).experimental?.continue_loop_on_deny !== true
+
+        // Vision preprocessing: analyze images before sending to coding model
+        const cfg = await Config.get()
+        let modifiedUser = streamInput.user
+        if (cfg.vision?.enabled) {
+          const userMessageWithParts = await MessageV2.get({
+            sessionID: input.sessionID,
+            messageID: streamInput.user.id,
+          })
+
+          if (VisionPreprocessor.hasImages(userMessageWithParts.parts)) {
+            const analysis = await VisionPreprocessor.analyzeImages(input.sessionID, userMessageWithParts, cfg.vision)
+            if (analysis) {
+              modifiedUser = VisionPreprocessor.injectAnalysis(streamInput.user, analysis)
+            }
+          }
+        }
+
+        streamInput.user = modifiedUser
+
         while (true) {
           try {
             let currentText: MessageV2.TextPart | undefined
@@ -170,10 +192,17 @@ export namespace SessionProcessor {
                     // Parse Kimi K2 style tool calls from reasoning text
                     const parsedCalls = parseReasoningToolCalls(part.text)
                     if (parsedCalls) {
-                      log.info("parsed tool calls from reasoning", { count: parsedCalls.length, tools: parsedCalls.map(c => c.tool) })
+                      log.info("parsed tool calls from reasoning", {
+                        count: parsedCalls.length,
+                        tools: parsedCalls.map((c) => c.tool),
+                      })
                       reasoningToolCalls = parsedCalls
                     }
-                    log.info("reasoning-end", { hasToolCalls: !!parsedCalls, textLength: part.text.length, containsToolSection: part.text.includes("<|tool_calls_section_begin|>") })
+                    log.info("reasoning-end", {
+                      hasToolCalls: !!parsedCalls,
+                      textLength: part.text.length,
+                      containsToolSection: part.text.includes("<|tool_calls_section_begin|>"),
+                    })
 
                     part.time = {
                       ...part.time,
@@ -336,10 +365,11 @@ export namespace SessionProcessor {
                     finishReason = rawFinish
                   } else if (rawFinish && typeof rawFinish === "object") {
                     // Handle any object format - prefer unified, then raw, then type
-                    finishReason = (rawFinish as any).unified
-                      ?? (rawFinish as any).raw
-                      ?? (rawFinish as any).type
-                      ?? JSON.stringify(rawFinish)
+                    finishReason =
+                      (rawFinish as any).unified ??
+                      (rawFinish as any).raw ??
+                      (rawFinish as any).type ??
+                      JSON.stringify(rawFinish)
                   } else {
                     finishReason = "unknown"
                   }

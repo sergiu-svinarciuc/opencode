@@ -28,6 +28,7 @@ import { existsSync } from "fs"
 import { Bus } from "@/bus"
 import { GlobalBus } from "@/bus/global"
 import { Event } from "../server/event"
+import { VisionConfig } from "./vision-config"
 
 export namespace Config {
   const log = Log.create({ service: "config" })
@@ -1096,6 +1097,7 @@ export namespace Config {
             .describe("Timeout in milliseconds for model context protocol (MCP) requests"),
         })
         .optional(),
+      vision: VisionConfig.optional().describe("Vision configuration for automatic image analysis"),
     })
     .strict()
     .meta({

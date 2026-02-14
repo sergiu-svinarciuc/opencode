@@ -4,6 +4,7 @@ import type { JSONSchema } from "zod/v4/core"
 import type { Provider } from "./provider"
 import type { ModelsDev } from "./models"
 import { iife } from "@/util/iife"
+import { Log } from "@/util/log"
 
 type Modality = NonNullable<ModelsDev.Model["modalities"]>["input"][number]
 
@@ -16,6 +17,8 @@ function mimeToModality(mime: string): Modality | undefined {
 }
 
 export namespace ProviderTransform {
+  const log = Log.create({ service: "provider-transform" })
+
   // Maps npm package to the key the AI SDK expects for providerOptions
   function sdkKey(npm: string): string | undefined {
     switch (npm) {
@@ -207,35 +210,49 @@ export namespace ProviderTransform {
     return msgs.map((msg) => {
       if (msg.role !== "user" || !Array.isArray(msg.content)) return msg
 
-      const filtered = msg.content.map((part) => {
-        if (part.type !== "file" && part.type !== "image") return part
+      const filtered = msg.content
+        .map((part) => {
+          if (part.type !== "file" && part.type !== "image") return part
 
-        // Check for empty base64 image data
-        if (part.type === "image") {
-          const imageStr = part.image.toString()
-          if (imageStr.startsWith("data:")) {
-            const match = imageStr.match(/^data:([^;]+);base64,(.*)$/)
-            if (match && (!match[2] || match[2].length === 0)) {
-              return {
-                type: "text" as const,
-                text: "ERROR: Image file is empty or corrupted. Please provide a valid image.",
+          // Check for empty base64 image data
+          if (part.type === "image") {
+            const imageStr = part.image.toString()
+            if (imageStr.startsWith("data:")) {
+              const match = imageStr.match(/^data:([^;]+);base64,(.*)$/)
+              if (match && (!match[2] || match[2].length === 0)) {
+                return {
+                  type: "text" as const,
+                  text: "ERROR: Image file is empty or corrupted. Please provide a valid image.",
+                }
               }
             }
           }
-        }
 
-        const mime = part.type === "image" ? part.image.toString().split(";")[0].replace("data:", "") : part.mediaType
-        const filename = part.type === "file" ? part.filename : undefined
-        const modality = mimeToModality(mime)
-        if (!modality) return part
-        if (model.capabilities.input[modality]) return part
+          const mime = part.type === "image" ? part.image.toString().split(";")[0].replace("data:", "") : part.mediaType
+          const filename = part.type === "file" ? part.filename : undefined
+          const modality = mimeToModality(mime)
+          if (!modality) return part
 
-        const name = filename ? `"${filename}"` : modality
-        return {
-          type: "text" as const,
-          text: `ERROR: Cannot read ${name} (this model does not support ${modality} input). Inform the user.`,
-        }
-      })
+          // FORCE FILTER FOR GLM MODELS
+          // GLM models (from vertex-glm provider) don't support images
+          // but the provider sometimes incorrectly reports them as supporting images
+          const isGLMProvider =
+            model.providerID === "vertex-glm" || model.api.id.includes("glm") || model.id.includes("glm")
+
+          if (modality === "image" && (!model.capabilities.input.image || isGLMProvider)) {
+            return null
+          }
+
+          // Other unsupported modalities: return error message
+          if (model.capabilities.input[modality]) return part
+
+          const name = filename ? `"${filename}"` : modality
+          return {
+            type: "text" as const,
+            text: `ERROR: Cannot read ${name} (this model does not support ${modality} input). Inform the user.`,
+          }
+        })
+        .filter((part) => part !== null) as any
 
       return { ...msg, content: filtered }
     })

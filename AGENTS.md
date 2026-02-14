@@ -1,4 +1,7 @@
 - To test opencode in `packages/opencode`, run `bun dev`.
 - To regenerate the JavaScript SDK, run `./packages/sdk/js/script/build.ts`.
 - ALWAYS USE PARALLEL TOOLS WHEN APPLICABLE.
+- OpenCode logs are stored at `~/.local/share/opencode/log/` with naming pattern `YYYY-MM-DDTHHMMSS.log`
+  - To find the most recent log: `ls -lt ~/.local/share/opencode/log/ | head -5`
+  - To grep for specific events: `grep "some-event" ~/.local/share/opencode/log/$(ls -t ~/.local/share/opencode/log/ | head -1)`
 - The default branch in this repo is `dev`.
