@@ -31,8 +31,13 @@ export namespace VisionPreprocessor {
       return ""
     }
 
+    const userText = userMessage.parts
+      .filter((part) => part.type === "text")
+      .map((part) => (part as MessageV2.TextPart).text)
+      .join("\n")
+
     try {
-      const analysis = await GeminiVision.analyze(imageParts, config)
+      const analysis = await GeminiVision.analyze(imageParts, config, userText)
       return analysis
     } catch (error: any) {
       log.warn("vision analysis failed", { sessionID, error: error.message })

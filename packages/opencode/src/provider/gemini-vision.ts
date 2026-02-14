@@ -13,7 +13,11 @@ export namespace GeminiVision {
     "gemini-3-pro": "gemini-3.0-pro",
   }
 
-  export async function analyze(images: MessageV2.FilePart[], config: VisionConfig): Promise<string> {
+  export async function analyze(
+    images: MessageV2.FilePart[],
+    config: VisionConfig,
+    userText: string = "",
+  ): Promise<string> {
     if (images.length === 0) return ""
 
     const modelName = config.model === "auto" ? "gemini-2-5-flash" : config.model
@@ -22,7 +26,7 @@ export namespace GeminiVision {
     const location = config.location || "global"
 
     try {
-      const payload = await buildRequestPayload(images, config.prompt)
+      const payload = await buildRequestPayload(images, config.prompt, userText)
       const analysis = await callVertexAI(payload, project, location, config.timeout || 30000, model)
       return analysis
     } catch (error: any) {
@@ -33,7 +37,7 @@ export namespace GeminiVision {
     }
   }
 
-  async function buildRequestPayload(images: MessageV2.FilePart[], prompt: string): Promise<any> {
+  async function buildRequestPayload(images: MessageV2.FilePart[], prompt: string, userText: string): Promise<any> {
     const parts: any[] = []
 
     for (const img of images) {
@@ -42,7 +46,9 @@ export namespace GeminiVision {
         parts.push(imagePart)
       }
     }
-    parts.push({ text: prompt })
+
+    const fullPrompt = userText ? `${userText}\n\n${prompt}` : prompt
+    parts.push({ text: fullPrompt })
 
     return {
       contents: {
