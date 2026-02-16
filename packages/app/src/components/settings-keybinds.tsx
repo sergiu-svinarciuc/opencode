@@ -1,6 +1,11 @@
-import { Component, For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js"
+import { Component, For, Show, createMemo, onCleanup, onMount } from "solid-js"
+import { createStore } from "solid-js/store"
 import { Button } from "@opencode-ai/ui/button"
+import { Icon } from "@opencode-ai/ui/icon"
+import { IconButton } from "@opencode-ai/ui/icon-button"
+import { TextField } from "@opencode-ai/ui/text-field"
 import { showToast } from "@opencode-ai/ui/toast"
+import fuzzysort from "fuzzysort"
 import { formatKeybind, parseKeybind, useCommand } from "@/context/command"
 import { useLanguage } from "@/context/language"
 import { useSettings } from "@/context/settings"
@@ -15,6 +20,9 @@ type KeybindMeta = {
   title: string
   group: KeybindGroup
 }
+
+type KeybindMap = Record<string, string | undefined>
+type CommandContext = ReturnType<typeof useCommand>
 
 const GROUPS: KeybindGroup[] = ["General", "Session", "Navigation", "Model and agent", "Terminal", "Prompt"]
 
@@ -39,7 +47,7 @@ function groupFor(id: string): KeybindGroup {
   if (id === PALETTE_ID) return "General"
   if (id.startsWith("terminal.")) return "Terminal"
   if (id.startsWith("model.") || id.startsWith("agent.") || id.startsWith("mcp.")) return "Model and agent"
-  if (id.startsWith("file.")) return "Navigation"
+  if (id.startsWith("file.") || id.startsWith("fileTree.")) return "Navigation"
   if (id.startsWith("prompt.")) return "Prompt"
   if (
     id.startsWith("session.") ||
@@ -102,36 +110,181 @@ function signatures(config: string | undefined) {
   return sigs
 }
 
+function keybinds(value: unknown): KeybindMap {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {}
+  return value as KeybindMap
+}
+
+function listFor(command: CommandContext, map: KeybindMap, palette: string) {
+  const out = new Map<string, KeybindMeta>()
+  out.set(PALETTE_ID, { title: palette, group: "General" })
+
+  for (const opt of command.catalog) {
+    if (opt.id.startsWith("suggested.")) continue
+    out.set(opt.id, { title: opt.title, group: groupFor(opt.id) })
+  }
+
+  for (const opt of command.options) {
+    if (opt.id.startsWith("suggested.")) continue
+    out.set(opt.id, { title: opt.title, group: groupFor(opt.id) })
+  }
+
+  for (const [id, value] of Object.entries(map)) {
+    if (typeof value !== "string") continue
+    if (out.has(id)) continue
+    out.set(id, { title: id, group: groupFor(id) })
+  }
+
+  return out
+}
+
+function groupedFor(list: Map<string, KeybindMeta>) {
+  const out = new Map<KeybindGroup, string[]>()
+  for (const group of GROUPS) out.set(group, [])
+
+  for (const [id, item] of list) {
+    const ids = out.get(item.group)
+    if (!ids) continue
+    ids.push(id)
+  }
+
+  for (const group of GROUPS) {
+    const ids = out.get(group)
+    if (!ids) continue
+    ids.sort((a, b) => (list.get(a)?.title ?? "").localeCompare(list.get(b)?.title ?? ""))
+  }
+
+  return out
+}
+
+function filteredFor(
+  query: string,
+  list: Map<string, KeybindMeta>,
+  grouped: Map<KeybindGroup, string[]>,
+  keybind: (id: string) => string,
+) {
+  const value = query.toLowerCase().trim()
+  if (!value) return grouped
+
+  const out = new Map<KeybindGroup, string[]>()
+  for (const group of GROUPS) out.set(group, [])
+
+  const items = Array.from(list.entries()).map(([id, meta]) => ({
+    id,
+    title: meta.title,
+    group: meta.group,
+    keybind: keybind(id),
+  }))
+
+  const results = fuzzysort.go(value, items, {
+    keys: ["title", "keybind"],
+    threshold: -10000,
+  })
+
+  for (const result of results) {
+    const ids = out.get(result.obj.group)
+    if (!ids) continue
+    ids.push(result.obj.id)
+  }
+
+  return out
+}
+
+function useKeyCapture(input: {
+  active: () => string | null
+  stop: () => void
+  set: (id: string, keybind: string) => void
+  used: () => Map<string, { id: string; title: string }[]>
+  language: ReturnType<typeof useLanguage>
+}) {
+  onMount(() => {
+    const handle = (event: KeyboardEvent) => {
+      const id = input.active()
+      if (!id) return
+
+      event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation()
+
+      if (event.key === "Escape") {
+        input.stop()
+        return
+      }
+
+      const clear =
+        (event.key === "Backspace" || event.key === "Delete") &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        !event.shiftKey
+      if (clear) {
+        input.set(id, "none")
+        input.stop()
+        return
+      }
+
+      const next = recordKeybind(event)
+      if (!next) return
+
+      const conflicts = new Map<string, string>()
+      for (const sig of signatures(next)) {
+        for (const item of input.used().get(sig) ?? []) {
+          if (item.id === id) continue
+          conflicts.set(item.id, item.title)
+        }
+      }
+
+      if (conflicts.size > 0) {
+        showToast({
+          title: input.language.t("settings.shortcuts.conflict.title"),
+          description: input.language.t("settings.shortcuts.conflict.description", {
+            keybind: formatKeybind(next),
+            titles: [...conflicts.values()].join(", "),
+          }),
+        })
+        return
+      }
+
+      input.set(id, next)
+      input.stop()
+    }
+
+    document.addEventListener("keydown", handle, true)
+    onCleanup(() => document.removeEventListener("keydown", handle, true))
+  })
+}
+
 export const SettingsKeybinds: Component = () => {
   const command = useCommand()
   const language = useLanguage()
   const settings = useSettings()
 
-  const [active, setActive] = createSignal<string | null>(null)
+  const [store, setStore] = createStore({
+    active: null as string | null,
+    filter: "",
+  })
 
   const stop = () => {
-    if (!active()) return
-    setActive(null)
+    if (!store.active) return
+    setStore("active", null)
     command.keybinds(true)
   }
 
   const start = (id: string) => {
-    if (active() === id) {
+    if (store.active === id) {
       stop()
       return
     }
 
-    if (active()) stop()
+    if (store.active) stop()
 
-    setActive(id)
+    setStore("active", id)
     command.keybinds(false)
   }
 
-  const hasOverrides = createMemo(() => {
-    const keybinds = settings.current.keybinds as Record<string, string | undefined> | undefined
-    if (!keybinds) return false
-    return Object.values(keybinds).some((x) => typeof x === "string")
-  })
+  const map = createMemo(() => keybinds(settings.current.keybinds))
+
+  const hasOverrides = createMemo(() => Object.values(map()).some((x) => typeof x === "string"))
 
   const resetAll = () => {
     stop()
@@ -144,57 +297,23 @@ export const SettingsKeybinds: Component = () => {
 
   const list = createMemo(() => {
     language.locale()
-    const out = new Map<string, KeybindMeta>()
-    out.set(PALETTE_ID, { title: language.t("command.palette"), group: "General" })
-
-    for (const opt of command.catalog) {
-      if (opt.id.startsWith("suggested.")) continue
-      out.set(opt.id, { title: opt.title, group: groupFor(opt.id) })
-    }
-
-    for (const opt of command.options) {
-      if (opt.id.startsWith("suggested.")) continue
-      out.set(opt.id, { title: opt.title, group: groupFor(opt.id) })
-    }
-
-    const keybinds = settings.current.keybinds as Record<string, string | undefined> | undefined
-    if (keybinds) {
-      for (const [id, value] of Object.entries(keybinds)) {
-        if (typeof value !== "string") continue
-        if (out.has(id)) continue
-        out.set(id, { title: id, group: groupFor(id) })
-      }
-    }
-
-    return out
+    return listFor(command, map(), language.t("command.palette"))
   })
 
   const title = (id: string) => list().get(id)?.title ?? ""
 
-  const grouped = createMemo(() => {
-    const map = list()
-    const out = new Map<KeybindGroup, string[]>()
+  const grouped = createMemo(() => groupedFor(list()))
 
-    for (const group of GROUPS) out.set(group, [])
+  const filtered = createMemo(() => {
+    return filteredFor(store.filter, list(), grouped(), (id) => command.keybind(id) || "")
+  })
 
-    for (const [id, item] of map) {
-      const ids = out.get(item.group)
-      if (!ids) continue
-      ids.push(id)
-    }
-
+  const hasResults = createMemo(() => {
     for (const group of GROUPS) {
-      const ids = out.get(group)
-      if (!ids) continue
-
-      ids.sort((a, b) => {
-        const at = map.get(a)?.title ?? ""
-        const bt = map.get(b)?.title ?? ""
-        return at.localeCompare(bt)
-      })
+      const ids = filtered().get(group) ?? []
+      if (ids.length > 0) return true
     }
-
-    return out
+    return false
   })
 
   const used = createMemo(() => {
@@ -235,115 +354,76 @@ export const SettingsKeybinds: Component = () => {
     return map
   })
 
-  const setKeybind = (id: string, keybind: string) => {
-    settings.keybinds.set(id, keybind)
-  }
+  const setKeybind = (id: string, keybind: string) => settings.keybinds.set(id, keybind)
 
-  onMount(() => {
-    const handle = (event: KeyboardEvent) => {
-      const id = active()
-      if (!id) return
-
-      event.preventDefault()
-      event.stopPropagation()
-      event.stopImmediatePropagation()
-
-      if (event.key === "Escape") {
-        stop()
-        return
-      }
-
-      const clear =
-        (event.key === "Backspace" || event.key === "Delete") &&
-        !event.ctrlKey &&
-        !event.metaKey &&
-        !event.altKey &&
-        !event.shiftKey
-      if (clear) {
-        setKeybind(id, "none")
-        stop()
-        return
-      }
-
-      const next = recordKeybind(event)
-      if (!next) return
-
-      const map = used()
-      const conflicts = new Map<string, string>()
-
-      for (const sig of signatures(next)) {
-        const list = map.get(sig) ?? []
-        for (const item of list) {
-          if (item.id === id) continue
-          conflicts.set(item.id, item.title)
-        }
-      }
-
-      if (conflicts.size > 0) {
-        showToast({
-          title: language.t("settings.shortcuts.conflict.title"),
-          description: language.t("settings.shortcuts.conflict.description", {
-            keybind: formatKeybind(next),
-            titles: [...conflicts.values()].join(", "),
-          }),
-        })
-        return
-      }
-
-      setKeybind(id, next)
-      stop()
-    }
-
-    document.addEventListener("keydown", handle, true)
-    onCleanup(() => {
-      document.removeEventListener("keydown", handle, true)
-    })
+  useKeyCapture({
+    active: () => store.active,
+    stop,
+    set: setKeybind,
+    used,
+    language,
   })
 
   onCleanup(() => {
-    if (active()) command.keybinds(true)
+    if (store.active) command.keybinds(true)
   })
 
   return (
-    <div class="flex flex-col h-full overflow-y-auto no-scrollbar" style={{ padding: "0 40px 40px 40px" }}>
-      <div
-        class="sticky top-0 z-10"
-        style={{
-          background:
-            "linear-gradient(to bottom, var(--surface-raised-stronger-non-alpha) calc(100% - 24px), transparent)",
-        }}
-      >
-        <div class="flex items-center justify-between gap-4 pt-6 pb-8 max-w-[720px]">
-          <h2 class="text-16-medium text-text-strong">{language.t("settings.shortcuts.title")}</h2>
-          <Button size="small" variant="secondary" onClick={resetAll} disabled={!hasOverrides()}>
-            {language.t("settings.shortcuts.reset.button")}
-          </Button>
+    <div class="flex flex-col h-full overflow-y-auto no-scrollbar px-4 pb-10 sm:px-10 sm:pb-10">
+      <div class="sticky top-0 z-10 bg-[linear-gradient(to_bottom,var(--surface-raised-stronger-non-alpha)_calc(100%_-_24px),transparent)]">
+        <div class="flex flex-col gap-4 pt-6 pb-6 max-w-[720px]">
+          <div class="flex items-center justify-between gap-4">
+            <h2 class="text-16-medium text-text-strong">{language.t("settings.shortcuts.title")}</h2>
+            <Button size="small" variant="secondary" onClick={resetAll} disabled={!hasOverrides()}>
+              {language.t("settings.shortcuts.reset.button")}
+            </Button>
+          </div>
+
+          <div class="flex items-center gap-2 px-3 h-9 rounded-lg bg-surface-base">
+            <Icon name="magnifying-glass" class="text-icon-weak-base flex-shrink-0" />
+            <TextField
+              variant="ghost"
+              type="text"
+              value={store.filter}
+              onChange={(v) => setStore("filter", v)}
+              placeholder={language.t("settings.shortcuts.search.placeholder")}
+              spellcheck={false}
+              autocorrect="off"
+              autocomplete="off"
+              autocapitalize="off"
+              class="flex-1"
+            />
+            <Show when={store.filter}>
+              <IconButton icon="circle-x" variant="ghost" onClick={() => setStore("filter", "")} />
+            </Show>
+          </div>
         </div>
       </div>
 
       <div class="flex flex-col gap-8 max-w-[720px]">
         <For each={GROUPS}>
           {(group) => (
-            <Show when={(grouped().get(group) ?? []).length > 0}>
+            <Show when={(filtered().get(group) ?? []).length > 0}>
               <div class="flex flex-col gap-1">
                 <h3 class="text-14-medium text-text-strong pb-2">{language.t(groupKey[group])}</h3>
                 <div class="bg-surface-raised-base px-4 rounded-lg">
-                  <For each={grouped().get(group) ?? []}>
+                  <For each={filtered().get(group) ?? []}>
                     {(id) => (
                       <div class="flex items-center justify-between gap-4 py-3 border-b border-border-weak-base last:border-none">
                         <span class="text-14-regular text-text-strong">{title(id)}</span>
                         <button
                           type="button"
+                          data-keybind-id={id}
                           classList={{
                             "h-8 px-3 rounded-md text-12-regular": true,
                             "bg-surface-base text-text-subtle hover:bg-surface-raised-base-hover active:bg-surface-raised-base-active":
-                              active() !== id,
-                            "border border-border-weak-base bg-surface-inset-base text-text-weak": active() === id,
+                              store.active !== id,
+                            "border border-border-weak-base bg-surface-inset-base text-text-weak": store.active === id,
                           }}
                           onClick={() => start(id)}
                         >
                           <Show
-                            when={active() === id}
+                            when={store.active === id}
                             fallback={command.keybind(id) || language.t("settings.shortcuts.unassigned")}
                           >
                             {language.t("settings.shortcuts.pressKeys")}
@@ -357,6 +437,15 @@ export const SettingsKeybinds: Component = () => {
             </Show>
           )}
         </For>
+
+        <Show when={store.filter && !hasResults()}>
+          <div class="flex flex-col items-center justify-center py-12 text-center">
+            <span class="text-14-regular text-text-weak">{language.t("settings.shortcuts.search.empty")}</span>
+            <Show when={store.filter}>
+              <span class="text-14-regular text-text-strong mt-1">"{store.filter}"</span>
+            </Show>
+          </div>
+        </Show>
       </div>
     </div>
   )
