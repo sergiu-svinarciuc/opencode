@@ -695,31 +695,13 @@ export namespace Session {
         return 0
       }
 
-      const inputTokens = getTokenValue(input.usage.inputTokens)
-      const outputTokens = getTokenValue(input.usage.outputTokens)
-
-      // For cached tokens, check both old format and new nested format
-      const cachedInputTokens = input.usage.cachedInputTokens ??
-        (typeof input.usage.inputTokens === "object" && input.usage.inputTokens !== null
-          ? (input.usage.inputTokens as any).cacheRead ?? 0
-          : 0)
-
-      // For reasoning tokens, check both old format and new nested format
-      const reasoningTokens = input.usage?.reasoningTokens ??
-        (typeof input.usage.outputTokens === "object" && input.usage.outputTokens !== null
-          ? (input.usage.outputTokens as any).reasoning ?? 0
-          : 0)
-
-      const excludesCachedTokens = !!(input.metadata?.["anthropic"] || input.metadata?.["bedrock"])
-      const adjustedInputTokens = excludesCachedTokens
-        ? inputTokens
-        : Math.max(0, inputTokens - cachedInputTokens)
       const safe = (value: number) => {
         if (!Number.isFinite(value) || value < 0) return 0
         return value
       }
-      const inputTokens = safe(input.usage.inputTokens ?? 0)
-      const outputTokens = safe(input.usage.outputTokens ?? 0)
+
+      const inputTokens = safe(getTokenValue(input.usage.inputTokens))
+      const outputTokens = safe(getTokenValue(input.usage.outputTokens))
       const reasoningTokens = safe(input.usage.reasoningTokens ?? 0)
 
       const cacheReadInputTokens = safe(input.usage.cachedInputTokens ?? 0)
