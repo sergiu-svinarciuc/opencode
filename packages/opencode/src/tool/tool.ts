@@ -55,6 +55,48 @@ export namespace Tool {
         const toolInfo = init instanceof Function ? await init(initCtx) : init
         const execute = toolInfo.execute
         toolInfo.execute = async (args, ctx) => {
+          // GLM 4.7 argument normalization: fix malformed argument keys
+          // Pattern 1: "read<arg_key>filePath" -> "filePath"
+          // Pattern 2: tool name as key {"bash": "cmd"} -> {"command": "cmd"}
+          const toolParamMap: Record<string, string> = {
+            bash: "command",
+            read: "filePath",
+            write: "filePath",
+            edit: "filePath",
+            glob: "pattern",
+            grep: "pattern",
+          }
+          if (args && typeof args === "object") {
+            const normalized: Record<string, unknown> = {}
+            for (const [key, value] of Object.entries(args)) {
+              let cleanKey = key
+              // Strip XML-style tags from keys (may appear multiple times)
+              if (key.includes("<arg_key>") || key.includes("<") || key.includes(">")) {
+                // Remove all occurrences of "word<arg_key>" pattern
+                cleanKey = key.replace(/[a-z_]+<arg_key>/gi, "").replace(/<[^>]+>/g, "")
+              }
+              // Handle tool name as key
+              if (key.toLowerCase() === id.toLowerCase() && toolParamMap[id]) {
+                cleanKey = toolParamMap[id]
+              }
+              // Parse stringified JSON values (arrays/objects passed as strings)
+              let cleanValue = value
+              if (typeof value === "string") {
+                const trimmed = value.trim()
+                if ((trimmed.startsWith("[") && trimmed.endsWith("]")) ||
+                    (trimmed.startsWith("{") && trimmed.endsWith("}"))) {
+                  try {
+                    cleanValue = JSON.parse(trimmed)
+                  } catch {
+                    // Keep as string if parse fails
+                  }
+                }
+              }
+              normalized[cleanKey || key] = cleanValue
+            }
+            args = normalized as typeof args
+          }
+
           try {
             toolInfo.parameters.parse(args)
           } catch (error) {

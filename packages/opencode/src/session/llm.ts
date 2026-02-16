@@ -74,6 +74,8 @@ export namespace LLM {
         ...input.system,
         // any custom prompt from last user message
         ...(input.user.system ? [input.user.system] : []),
+        // vision analysis if available
+        ...((input.user as any).visionAnalysis ? [`[VISION ANALYSIS]\n${(input.user as any).visionAnalysis}`] : []),
       ]
         .filter((x) => x)
         .join("\n"),
@@ -180,8 +182,75 @@ export namespace LLM {
         })
       },
       async experimental_repairToolCall(failed) {
-        const lower = failed.toolCall.toolName.toLowerCase()
-        if (lower !== failed.toolCall.toolName && tools[lower]) {
+        l.info("repair tool call invoked", {
+          toolName: failed.toolCall.toolName,
+          args: JSON.stringify(failed.toolCall.input),
+          error: failed.error?.message,
+        })
+        // Some models (e.g., GLM 4.7) may output tool calls with XML-style prefixes
+        // like "<tool_call>bash" instead of just "bash". Strip these prefixes.
+        let toolName = failed.toolCall.toolName
+        if (toolName.startsWith("<tool_call>")) {
+          toolName = toolName.replace(/^<tool_call>\s*/, "")
+        }
+        // Also handle case where newline and arg tags leak into name
+        if (toolName.includes("\n")) {
+          toolName = toolName.split("\n")[0].trim()
+        }
+
+        const lower = toolName.toLowerCase()
+
+        // GLM 4.7 argument repair: handle various malformation patterns
+        // args can be either a string (JSON) or already parsed object
+        let repairedArgs: unknown = failed.toolCall.input
+        try {
+          // Parse if string, otherwise use as-is
+          const parsed = typeof repairedArgs === "string" ? JSON.parse(repairedArgs) : repairedArgs
+
+          if (parsed && typeof parsed === "object") {
+            const cleaned: Record<string, unknown> = {}
+            let needsRepair = false
+
+            // Mapping of tool names to their primary parameter when model uses tool name as key
+            const toolParamMap: Record<string, string> = {
+              bash: "command",
+              read: "filePath",
+              write: "filePath",
+              edit: "filePath",
+              glob: "pattern",
+              grep: "pattern",
+            }
+
+            for (const [key, value] of Object.entries(parsed)) {
+              let cleanKey = key
+
+              // Pattern 1: XML-style keys like "read<arg_key>filePath" -> "filePath"
+              if (key.includes("<arg_key>")) {
+                cleanKey = key.replace(/^[a-z]+<arg_key>/i, "").replace(/<[^>]+>/g, "")
+                needsRepair = true
+              }
+              // Pattern 2: Tool name used as key like {"bash": "ls"} -> {"command": "ls"}
+              else if (key.toLowerCase() === lower && toolParamMap[lower]) {
+                cleanKey = toolParamMap[lower]
+                needsRepair = true
+              }
+
+              cleaned[cleanKey] = value
+            }
+
+            if (needsRepair) {
+              repairedArgs = cleaned // Return object, not string
+              l.info("repaired tool args", {
+                original: JSON.stringify(failed.toolCall.input),
+                repaired: JSON.stringify(repairedArgs),
+              })
+            }
+          }
+        } catch {
+          // If parsing fails, keep original
+        }
+
+        if (tools[lower]) {
           l.info("repairing tool call", {
             tool: failed.toolCall.toolName,
             repaired: lower,
@@ -189,6 +258,7 @@ export namespace LLM {
           return {
             ...failed.toolCall,
             toolName: lower,
+            input: typeof repairedArgs === "string" ? repairedArgs : JSON.stringify(repairedArgs),
           }
         }
         return {

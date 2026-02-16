@@ -32,6 +32,7 @@ import { PackageRegistry } from "@/bun/registry"
 import { proxied } from "@/util/proxied"
 import { iife } from "@/util/iife"
 import { Control } from "@/control"
+import { VisionConfig } from "./vision-config"
 
 export namespace Config {
   const ModelId = z.string().meta({ $ref: "https://models.dev/model-schema.json#/$defs/Model" })
@@ -790,13 +791,21 @@ export namespace Config {
         .optional()
         .default("pagedown,ctrl+alt+f")
         .describe("Scroll messages down by one page"),
-      messages_line_up: z.string().optional().default("ctrl+alt+y").describe("Scroll messages up by one line"),
-      messages_line_down: z.string().optional().default("ctrl+alt+e").describe("Scroll messages down by one line"),
-      messages_half_page_up: z.string().optional().default("ctrl+alt+u").describe("Scroll messages up by half page"),
+      messages_line_up: z.string().optional().default("ctrl+alt+y,shift+up").describe("Scroll messages up by one line"),
+      messages_line_down: z
+        .string()
+        .optional()
+        .default("ctrl+alt+e,shift+down")
+        .describe("Scroll messages down by one line"),
+      messages_half_page_up: z
+        .string()
+        .optional()
+        .default("ctrl+alt+u,ctrl+up")
+        .describe("Scroll messages up by half page"),
       messages_half_page_down: z
         .string()
         .optional()
-        .default("ctrl+alt+d")
+        .default("ctrl+alt+d,ctrl+down")
         .describe("Scroll messages down by half page"),
       messages_first: z.string().optional().default("ctrl+g,home").describe("Navigate to first message"),
       messages_last: z.string().optional().default("ctrl+alt+g,end").describe("Navigate to last message"),
@@ -1192,6 +1201,7 @@ export namespace Config {
             .describe("Timeout in milliseconds for model context protocol (MCP) requests"),
         })
         .optional(),
+      vision: VisionConfig.optional().describe("Vision configuration for automatic image analysis"),
     })
     .strict()
     .meta({

@@ -363,6 +363,7 @@ export namespace MessageV2 {
     system: z.string().optional(),
     tools: z.record(z.string(), z.boolean()).optional(),
     variant: z.string().optional(),
+    visionAnalysis: z.string().optional(),
   }).meta({
     ref: "UserMessage",
   })
@@ -555,6 +556,10 @@ export namespace MessageV2 {
           parts: [],
         }
         result.push(userMessage)
+        const hasVisionAnalysis = "visionAnalysis" in msg.info && msg.info.visionAnalysis
+        const modelSupportsImages = model.capabilities.input.image
+        const isGLMProvider = model.providerID === "vertex-glm" || model.id.includes("glm")
+        const shouldFilterImages = hasVisionAnalysis || !modelSupportsImages || isGLMProvider
         for (const part of msg.parts) {
           if (part.type === "text" && !part.ignored)
             userMessage.parts.push({
@@ -562,13 +567,21 @@ export namespace MessageV2 {
               text: part.text,
             })
           // text/plain and directory files are converted into text parts, ignore them
-          if (part.type === "file" && part.mime !== "text/plain" && part.mime !== "application/x-directory")
+          // image files are excluded if:
+          // 1) vision analysis was performed (since analysis is in system prompt),
+          // 2) the model doesn't support images, or
+          // 3) it's a GLM model (they don't support images even if capabilities say otherwise)
+          if (part.type === "file" && part.mime !== "text/plain" && part.mime !== "application/x-directory") {
+            if (part.mime.startsWith("image/") && shouldFilterImages) {
+              continue
+            }
             userMessage.parts.push({
               type: "file",
               url: part.url,
               mediaType: part.mime,
               filename: part.filename,
             })
+          }
 
           if (part.type === "compaction") {
             userMessage.parts.push({
