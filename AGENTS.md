@@ -114,3 +114,12 @@ const table = sqliteTable("session", {
 - Avoid mocks as much as possible
 - Test actual implementation, do not duplicate logic into tests
 - Tests cannot run from repo root (guard: `do-not-run-tests-from-root`); run from package dirs like `packages/opencode`.
+
+## Releases
+
+- Full release process documented in `RELEASE.md`
+- To release to official repo: use GitHub Actions `publish` workflow with `bump` or `version` parameter
+- To release to fork: follow manual release steps in `RELEASE.md`
+- CLI build artifacts: 10 platform binaries in `packages/opencode/dist/`
+- Release notes: use `script/changelog.ts --from <version> --to HEAD` for auto-generated
+- All package versions updated automatically by `script/publish.ts`
