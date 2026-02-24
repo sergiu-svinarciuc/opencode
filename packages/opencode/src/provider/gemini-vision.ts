@@ -30,10 +30,14 @@ export namespace GeminiVision {
       const analysis = await callVertexAI(payload, project, location, config.timeout || 30000, model)
       return analysis
     } catch (error: any) {
-      log.warn("vision analysis failed, continuing without analysis", {
+      log.error("vision analysis failed", {
         error: error.message,
+        imagesCount: images.length,
+        model,
+        project,
+        location,
       })
-      return ""
+      throw new Error(`Vision analysis failed: ${error.message}`)
     }
   }
 
@@ -76,28 +80,22 @@ export namespace GeminiVision {
     }
 
     if (img.url.startsWith("file://") || img.url.startsWith("/")) {
-      try {
-        const filePath = img.url.replace("file://", "")
-        const file = Bun.file(filePath)
-        const exists = await file.exists()
+      const filePath = img.url.replace("file://", "")
+      const file = Bun.file(filePath)
+      const exists = await file.exists()
 
-        if (!exists) {
-          log.warn("image file not found", { filePath })
-          return null
-        }
+      if (!exists) {
+        throw new Error(`Image file not found: ${filePath}`)
+      }
 
-        const buffer = await file.arrayBuffer()
-        const base64 = Buffer.from(buffer).toString("base64")
+      const buffer = await file.arrayBuffer()
+      const base64 = Buffer.from(buffer).toString("base64")
 
-        return {
-          inlineData: {
-            mimeType: img.mime,
-            data: base64,
-          },
-        }
-      } catch (error: any) {
-        log.warn("failed to read image file", { filePath: img.url, error: error.message })
-        return null
+      return {
+        inlineData: {
+          mimeType: img.mime,
+          data: base64,
+        },
       }
     }
 
@@ -135,15 +133,14 @@ export namespace GeminiVision {
 
       if (!response.ok) {
         const errorText = await response.text()
-        throw new Error(`Vertex AI API failed: ${response.status} ${errorText}`)
+        throw new Error(`Vertex AI API failed with status ${response.status}: ${errorText}`)
       }
 
       const data = await response.json()
       const text = extractTextFromResponse(data)
 
       if (!text) {
-        log.warn("no text in response", { data })
-        return ""
+        throw new Error("Vertex AI API returned no text in response")
       }
 
       return text
@@ -196,25 +193,22 @@ export namespace GeminiVision {
       }
     }
 
-    try {
-      const auth = await Auth.get("vertex-glm")
+    const auth = await Auth.get("vertex-glm")
 
-      if (!auth) {
-        throw new Error("No vertex-glm auth found in OpenCode auth (and gcloud auth failed)")
-      }
-
-      if (auth.type === "api" && auth.key) {
-        return auth.key
-      }
-
-      if (auth.type === "oauth" && auth.access) {
-        return auth.access
-      }
-
-      throw new Error("Unsupported auth type for vertex-glm")
-    } catch (error: any) {
-      log.warn("failed to get vertex-glm access token", { error: error.message })
-      throw error
+    if (!auth) {
+      throw new Error(
+        "Google authorization failed: No valid credentials found. Run 'gcloud auth login' or configure OpenCode auth for vertex-glm provider.",
+      )
     }
+
+    if (auth.type === "api" && auth.key) {
+      return auth.key
+    }
+
+    if (auth.type === "oauth" && auth.access) {
+      return auth.access
+    }
+
+    throw new Error("Unsupported auth type for vertex-glm provider")
   }
 }

@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach } from "bun:test"
+import { describe, it, expect, beforeEach, spyOn } from "bun:test"
 import { VisionPreprocessor } from "@/session/vision-preprocessor"
+import { GeminiVision } from "@/provider/gemini-vision"
 import type { MessageV2 } from "@/session/message-v2"
 import type { VisionConfig } from "@/config/vision-config"
 
@@ -149,6 +150,8 @@ describe("VisionPreprocessor", () => {
     })
 
     it("should respect maxImages limit", async () => {
+      const analyzeSpy = spyOn(GeminiVision, "analyze").mockResolvedValue("mocked-analysis")
+
       const parts: MessageV2.Part[] = []
       for (let i = 0; i < 15; i++) {
         parts.push({
@@ -174,10 +177,14 @@ describe("VisionPreprocessor", () => {
         maxImages: 5,
       }
 
-      // Note: This would require mocking GeminiVision.analyze to verify behavior
       const result = await VisionPreprocessor.analyzeImages("session123", userMessage, config)
-      // For now, we just verify it runs without error
-      expect(typeof result).toBe("string")
+
+      expect(analyzeSpy).toHaveBeenCalled()
+      const callArgs = analyzeSpy.mock.calls[0]
+      expect(callArgs[0]).toHaveLength(5)
+      expect(result).toBe("mocked-analysis")
+
+      analyzeSpy.mockRestore()
     })
   })
 

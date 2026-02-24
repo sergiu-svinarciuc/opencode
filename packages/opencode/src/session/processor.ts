@@ -136,9 +136,24 @@ export namespace SessionProcessor {
           })
 
           if (VisionPreprocessor.hasImages(userMessageWithParts.parts)) {
-            const analysis = await VisionPreprocessor.analyzeImages(input.sessionID, userMessageWithParts, cfg.vision)
-            if (analysis) {
-              modifiedUser = VisionPreprocessor.injectAnalysis(streamInput.user, analysis)
+            try {
+              const analysis = await VisionPreprocessor.analyzeImages(input.sessionID, userMessageWithParts, cfg.vision)
+              if (analysis) {
+                modifiedUser = VisionPreprocessor.injectAnalysis(streamInput.user, analysis)
+              }
+            } catch (e: any) {
+              log.error("vision preprocessing failed", {
+                error: e.message,
+              })
+              input.assistantMessage.error = MessageV2.fromError(e, { providerID: input.model.providerID })
+              input.assistantMessage.time.completed = Date.now()
+              await Session.updateMessage(input.assistantMessage)
+              Bus.publish(Session.Event.Error, {
+                sessionID: input.assistantMessage.sessionID,
+                error: input.assistantMessage.error,
+              })
+              SessionStatus.set(input.sessionID, { type: "idle" })
+              return "stop"
             }
           }
         }
