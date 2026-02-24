@@ -138,6 +138,7 @@ export type UserMessage = {
     [key: string]: boolean
   }
   variant?: string
+  visionAnalysis?: string
 }
 
 export type ProviderAuthError = {
@@ -1667,6 +1668,40 @@ export type McpRemoteConfig = {
  */
 export type LayoutConfig = "auto" | "stretch"
 
+/**
+ * Vision configuration for automatic image analysis
+ */
+export type VisionConfig = {
+  /**
+   * Enable automatic image analysis
+   */
+  enabled?: boolean
+  /**
+   * Vision model to use for image analysis
+   */
+  model?: "gemini-2-5-flash" | "gemini-2-5-pro" | "gemini-3-pro" | "auto"
+  /**
+   * GCP project ID (falls back to vertex-glm provider config)
+   */
+  project?: string
+  /**
+   * GCP location (falls back to vertex-glm provider config)
+   */
+  location?: string
+  /**
+   * Prompt to use for vision analysis
+   */
+  prompt?: string
+  /**
+   * Timeout in milliseconds for vision API calls
+   */
+  timeout?: number
+  /**
+   * Maximum number of images to analyze per message
+   */
+  maxImages?: number
+}
+
 export type Config = {
   /**
    * JSON schema reference for configuration validation
@@ -1888,6 +1923,7 @@ export type Config = {
      */
     mcp_timeout?: number
   }
+  vision?: VisionConfig
 }
 
 export type BadRequestError = {
